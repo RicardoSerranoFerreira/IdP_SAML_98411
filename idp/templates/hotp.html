@@ -1,12 +1,14 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Authenticação HOTP </title>
+    <title>Verificação HOTP</title>
 </head>
 <body>
-    <h2>Insere o HOTP</h2>
-    <form action="/mfa/{{ service_id }}" method="POST">
-        <input type="text" name="hotp" placeholder="Código HOTP" required><br>
+    <h1>Verificação HOTP</h1>
+    <form method="post" action="{{ url_for('hotp') }}">
+        <label for="otp">Insere a tua HOTP:</label>
+        <input type="text" id="otp" name="otp" required>
+        <br>
         <input type="submit" value="Verify">
     </form>
 </body>

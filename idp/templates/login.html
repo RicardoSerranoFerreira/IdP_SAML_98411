@@ -4,11 +4,14 @@
     <title>Login</title>
 </head>
 <body>
-    <h2>Login</h2>
-    <form action="/login" method="POST">
-        <input type="text" name="user_id" placeholder="User ID" required><br>
-        <input type="password" name="password" placeholder="Password" required><br>
-        <input type="text" name="service_id" placeholder="Service ID" required><br>
+    <h1>Login</h1>
+    <form method="post" action="{{ url_for('login') }}">
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required>
+        <br>
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" required>
+        <br>
         <input type="submit" value="Login">
     </form>
 </body>

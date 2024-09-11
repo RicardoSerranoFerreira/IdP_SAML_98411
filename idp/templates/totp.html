@@ -1,12 +1,14 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Authenticação TOTP</title>
+    <title>Verificação TOTP</title>
 </head>
 <body>
-    <h2>Insere o TOTP</h2>
-    <form action="/mfa/{{ service_id }}" method="POST">
-        <input type="text" name="totp" placeholder="Código TOTP" required><br>
+    <h1>Verificação TOTP</h1>
+    <form method="post" action="{{ url_for('totp') }}">
+        <label for="otp">Insere o teu TOTP:</label>
+        <input type="text" id="otp" name="otp" required>
+        <br>
         <input type="submit" value="Verify">
     </form>
 </body>

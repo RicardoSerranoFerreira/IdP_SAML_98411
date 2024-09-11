@@ -5,5 +5,5 @@ cd idp
 py app.py
 
 # Correr web
-cd ../service
+cd ../serviço
 py app.py

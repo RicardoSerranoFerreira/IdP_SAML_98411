@@ -1,84 +1,179 @@
-from flask import Flask, redirect, session, render_template, request, jsonify, url_for
-from flask_saml2.sp import ServiceProvider
-from models import RegisteredService
-from mfa import authenticate_password, authenticate_totp, authenticate_hotp
-from saml_config import MyServiceProvider, registered_services
+import os
+import json
+import logging
+from flask import Flask, request, redirect, session, url_for, render_template
+from flask_sqlalchemy import SQLAlchemy
+from saml2 import config as saml_config
+from saml2 import server as saml_server
+from saml2.saml import NameID, AuthnRequest
+from saml2.sigver import SAMLError
+import pyotp
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP
+import random
+import saml_config
 
 app = Flask(__name__)
-app.secret_key = 'idp_secret_key'
+app.config['SECRET_KEY'] = os.urandom(24).hex()
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///idp.db'
+db = SQLAlchemy(app)
 
-# Register the SAML ServiceProvider
-sp = MyServiceProvider()
-app.register_blueprint(sp.create_blueprint(), url_prefix='/saml')
+# Logging setup
+logging.basicConfig(level=logging.INFO)
 
+# User, falta fazer roles
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(120), nullable=False)
+    roles = db.Column(db.String(120), nullable=False)
+    otp_secret = db.Column(db.String(16), nullable=True)
+    hotp_secret = db.Column(db.String(16), nullable=True)
 
-@app.route('/register_service', methods=['POST'])
-def register_service():
-    data = request.json
-    service_id = data.get('service_id')
-    public_key = data.get('public_key')
-    identity_attributes = data.get('identity_attributes')
-    penalty = data.get('penalty')
-    min_auth_methods = data.get('min_auth_methods')
-    saml_response_url = data.get('saml_response_url')
+# Serviço, por alterar
+class Service(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80), unique=True, nullable=False)
+    public_key = db.Column(db.Text, nullable=False)
+    attributes = db.Column(db.Text, nullable=False)
+    penalty = db.Column(db.Integer, nullable=False)
+    min_auth_methods = db.Column(db.Integer, nullable=False)
+    saml_response_url = db.Column(db.String(200), nullable=False)
+@app.before_first_request
+def create_tables():
+    db.create_all()
 
-    if service_id and public_key and saml_response_url:
-        registered_services[service_id] = RegisteredService(
-            public_key, identity_attributes, penalty, min_auth_methods, saml_response_url)
-        return jsonify({"status": "Service registered successfully"}), 200
+    # Add initial data for Service Providers
+    sp1 = ServiceProvider(
+        name= 'Serviço 1',
+        public_key=open('certs/sp_cert.pem').read(),
+        metadata_url='http://localhost:5001/saml/metadata',
+        penalty_value=5,
+        min_auth_methods=1,
+        response_url='http://localhost:5001/saml/acs'
+    )
+    db.session.add(sp1)
 
-    return jsonify({"error": "Invalid data"}), 400
+    # Add initial data for Users
+    user1 = User(
+        username='testuser',
+        password_hash=generate_password_hash('password123'),
+        otp_secret='JBSWY3DPEHPK3PXP',
+        hotp_secret='JBSWY3DPEHPK3PXP'
+    )
+    db.session.add(user1)
+    db.session.commit()
+def authenticate_user(username, password):
+    user = User.query.filter_by(username=username).first()
+    if user and user.password == password:
+        return user
+    return None
+def handle_mfa(user, service):
+    risk_score = get_user_risk_score(user) + service.penalty
+    auth_methods_needed = max(service.min_auth_methods, (risk_score // 10))
+    methods = ['password']
+    if auth_methods_needed >= 4:
+        methods += ['totp', 'hotp', 'hardware']
+    elif auth_methods_needed == 3:
+        methods += ['totp', 'hotp']
+    elif auth_methods_needed == 2:
+        methods += ['totp']
 
+    return methods
+
+# Valor random para score de risco
+def get_user_risk_score(user):
+    return random.randint(0, 50)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        user_id = request.form['user_id']
+        username = request.form['username']
         password = request.form['password']
-        service_id = request.form['service_id']
-
-        if authenticate_password(user_id, password):
-            session['user_id'] = user_id
-            return redirect(url_for('mfa', service_id=service_id))
-
+        user = authenticate_user(username, password)
+        if user:
+            session['user_id'] = user.id
+            return redirect(url_for('sso'))
         return 'Invalid credentials', 401
-
     return render_template('login.html')
 
 
-@app.route('/mfa/<service_id>', methods=['GET', 'POST'])
-def mfa(service_id):
-    user_id = session.get('user_id')
-
-    if not user_id:
+@app.route('/sso')
+def sso():
+    if 'user_id' not in session:
         return redirect(url_for('login'))
 
-    # Determine the number of MFA steps needed
-    service = registered_services.get(service_id)
-    mfa_methods = sp.determine_mfa_methods(service_id, user_id)
+    user = User.query.get(session['user_id'])
+    service = Service.query.first()  # Dado que existe apenas 1
 
-    if mfa_methods >= 2 and 'mfa_totp' not in session:
-        if request.method == 'POST':
-            totp = request.form.get('totp')
-            if authenticate_totp(user_id, totp):
-                session['mfa_totp'] = True
-                return redirect(url_for('mfa', service_id=service_id))
+    mfa_methods = handle_mfa(user, service)
 
-        return render_template('totp.html')
+    if 'totp' in mfa_methods and not verify_totp(user):
+        return redirect(url_for('totp'))
 
-    if mfa_methods >= 3 and 'mfa_hotp' not in session:
-        if request.method == 'POST':
-            hotp = request.form.get('hotp')
-            if authenticate_hotp(user_id, hotp):
-                session['mfa_hotp'] = True
-                return redirect(url_for('mfa', service_id=service_id))
+    if 'hotp' in mfa_methods and not verify_hotp(user):
+        return redirect(url_for('hotp'))
 
-        return render_template('hotp.html')
+    if 'hardware' in mfa_methods and not verify_hardware(user):
+        return redirect(url_for('hardware'))
 
-    # Dar redirect, se passar o MFA
-    sp.login_successful(user_id)
-    return redirect(sp.get_saml_response_url(service_id))
+    saml_response = generate_saml_response(user, service)
+    return saml_response
+
+
+def verify_totp(user):
+    if not user.otp_secret:
+        return False
+    otp = request.form.get('otp')
+
+    totp = pyotp.TOTP(user.otp_secret)
+    return totp.verify(otp)
+
+
+def verify_hotp(user):
+    if not user.hotp_secret:
+        return False
+    otp = request.form.get('otp')
+
+    counter = request.form.get('counter', type=int)
+
+    hotp = pyotp.HOTP(user.hotp_secret)
+    return hotp.verify(otp, counter)
+
+# Retorna True por propósito de teste
+def verify_hardware(user):
+    return True
+
+@app.route('/totp', methods=['GET', 'POST'])
+def totp():
+    if request.method == 'POST':
+        if verify_totp(User.query.get(session['user_id'])):
+            return redirect(url_for('sso'))
+        return 'Invalid TOTP', 401
+    return render_template('totp.html')
+
+@app.route('/hotp', methods=['GET', 'POST'])
+def hotp():
+    if request.method == 'POST':
+        if verify_hotp(User.query.get(session['user_id'])):
+            return redirect(url_for('sso'))
+        return 'Invalid HOTP', 401
+    return render_template('hotp.html')
+
+@app.route('/hardware', methods=['GET', 'POST'])
+def hardware():
+    if request.method == 'POST':
+        if verify_hardware(User.query.get(session['user_id'])):
+            return redirect(url_for('sso'))
+        return 'Invalid Hardware MFA', 401
+    return render_template('hardware.html')
+
+@app.route('/metadata')
+def metadata():
+    saml_config = get_saml_config()
+    metadata = saml_config.metadata
+    return metadata
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True)
