@@ -1,0 +1,6 @@
+Flask==2.2.5
+flask-sqlalchemy==3.1.1
+flask-saml2==0.3.0
+pyotp==2.6.0
+pycryptodome==3.10.1
+pyOpenSSL==17.5.0

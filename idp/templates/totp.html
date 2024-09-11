@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Authenticação TOTP</title>
+</head>
+<body>
+    <h2>Insere o TOTP</h2>
+    <form action="/mfa/{{ service_id }}" method="POST">
+        <input type="text" name="totp" placeholder="Código TOTP" required><br>
+        <input type="submit" value="Verify">
+    </form>
+</body>
+</html>
