@@ -69,21 +69,39 @@ def authenticate_user(username, password):
         return user
     return None
 def handle_mfa(user, service):
-    risk_score = get_user_risk_score(user) + service.penalty
-    auth_methods_needed = max(service.min_auth_methods, (risk_score // 10))
+    risk_score = get_user_risk_score(user,service)
     methods = ['password']
-    if auth_methods_needed >= 4:
+    if auth_methods >= 4:
         methods += ['totp', 'hotp', 'hardware']
-    elif auth_methods_needed == 3:
+    elif auth_methods == 3:
         methods += ['totp', 'hotp']
-    elif auth_methods_needed == 2:
+    elif auth_methods == 2:
         methods += ['totp']
 
     return methods
 
-# Valor random para score de risco
-def get_user_risk_score(user):
-    return random.randint(0, 50)
+# Valores random para score de risco gerados, que pode ou não adicionar risco depende do valor random
+def get_user_risk_score(user,service):
+    def calculate_risk_score(user, service):
+        risk_score = 0
+        # Risco base de penalty do serviço
+        risk_score += service.penalty
+
+        # Add risk based on Recent Activity with 50/50 chance
+        if random.choice([True, False]): #Logins falhados recentes
+            risk_score += random.random(0,3) * 2
+        if random.choice([True, False]): #Trocas de password recentes
+            risk_score += random.random(0,3) * 5
+        if random.choice([True, False]): #Nova localização
+            risk_score += 10
+        if random.choice([True, False]): #Novo dispositovo
+            risk_score += 10
+
+
+        auth_methods = max(service.min_auth_methods, (risk_score // 10))
+
+        return risk_score
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
